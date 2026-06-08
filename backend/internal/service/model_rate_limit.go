@@ -64,6 +64,10 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	}
 
 	modelKey := a.GetMappedModel(requestedModel)
+	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
+	if normalized != strings.TrimSpace(requestedModel) {
+		modelKey = a.GetMappedModel(normalized)
+	}
 	if a.Platform == PlatformAntigravity {
 		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
 	}

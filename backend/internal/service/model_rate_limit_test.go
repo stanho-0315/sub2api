@@ -54,6 +54,21 @@ func TestIsModelRateLimited(t *testing.T) {
 			expected:       true,
 		},
 		{
+			name: "openai reasoning alias uses normalized model key",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gpt-5.4": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-5.4-high",
+			expected:       true,
+		},
+		{
 			name: "no rate limit - expired",
 			account: &Account{
 				Extra: map[string]any{

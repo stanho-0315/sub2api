@@ -144,6 +144,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return nil, fmt.Errorf("convert chat completions to responses: %w", err)
 		}
 		responsesReq.Model = upstreamModel
+		if reasoningEffort := extractOpenAIReasoningEffortFromBody(body, originalModel); reasoningEffort != nil {
+			if responsesReq.Reasoning == nil {
+				responsesReq.Reasoning = &apicompat.ResponsesReasoning{}
+			}
+			if strings.TrimSpace(responsesReq.Reasoning.Effort) == "" {
+				responsesReq.Reasoning.Effort = *reasoningEffort
+			}
+		}
 		normalizeResponsesRequestServiceTier(responsesReq)
 		responsesBody, err = json.Marshal(responsesReq)
 		if err != nil {

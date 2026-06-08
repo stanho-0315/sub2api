@@ -994,16 +994,17 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	if len(availableModels) > 0 {
+		if platform == service.PlatformOpenAI {
+			writeOpenAIModelsList(c, expandOpenAIReasoningModelAliases(availableModels))
+			return
+		}
 		writeModelsList(c, availableModels)
 		return
 	}
 
 	// Fallback to default models
 	if platform == service.PlatformOpenAI {
-		c.JSON(http.StatusOK, gin.H{
-			"object": "list",
-			"data":   openai.DefaultModels,
-		})
+		writeOpenAIModelsList(c, expandOpenAIReasoningModelAliases(openai.DefaultModelIDs()))
 		return
 	}
 
@@ -1070,6 +1071,40 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 		"object": "list",
 		"data":   models,
 	})
+}
+
+func expandOpenAIReasoningModelAliases(modelIDs []string) []string {
+	expanded := make([]string, 0, len(modelIDs)*3)
+	seen := make(map[string]struct{}, len(modelIDs)*3)
+	for _, modelID := range modelIDs {
+		addOpenAIModelAlias(&expanded, seen, modelID)
+		if supportsOpenAIReasoningModelAliases(modelID) {
+			addOpenAIModelAlias(&expanded, seen, modelID+"-medium")
+			addOpenAIModelAlias(&expanded, seen, modelID+"-high")
+		}
+	}
+	return expanded
+}
+
+func addOpenAIModelAlias(out *[]string, seen map[string]struct{}, modelID string) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return
+	}
+	if _, ok := seen[modelID]; ok {
+		return
+	}
+	seen[modelID] = struct{}{}
+	*out = append(*out, modelID)
+}
+
+func supportsOpenAIReasoningModelAliases(modelID string) bool {
+	switch strings.TrimSpace(modelID) {
+	case "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2":
+		return true
+	default:
+		return false
+	}
 }
 
 func filterModelsByCustomList(availableModels, fallbackModels, selectedModels []string) []string {
