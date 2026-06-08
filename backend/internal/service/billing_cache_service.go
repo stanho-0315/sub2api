@@ -847,7 +847,7 @@ func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userI
 		s.circuitBreaker.OnSuccess()
 	}
 
-	if balance <= 0 {
+	if balance < 0 {
 		return ErrInsufficientBalance
 	}
 

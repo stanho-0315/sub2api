@@ -646,7 +646,7 @@ func TestRequireGroupAssignmentMarksUngroupedKeyBusinessLimited(t *testing.T) {
 
 }
 
-func TestAPIKeyAuthAllowsModelDiscoveryWithoutBalance(t *testing.T) {
+func TestAPIKeyAuthAllowsZeroBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	group := &service.Group{
@@ -702,6 +702,46 @@ func TestAPIKeyAuthAllowsModelDiscoveryWithoutBalance(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/t", nil)
+	req.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestAPIKeyAuthRejectsNegativeBalance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:          7,
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     -0.01,
+		Concurrency: 3,
+	}
+	apiKey := &service.APIKey{
+		ID:     100,
+		UserID: user.ID,
+		Key:    "negative-balance-key",
+		Status: service.StatusActive,
+		User:   user,
+	}
+
+	apiKeyRepo := &stubApiKeyRepo{
+		getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+			if key != apiKey.Key {
+				return nil, service.ErrAPIKeyNotFound
+			}
+			clone := *apiKey
+			return &clone, nil
+		},
+	}
+
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg)
+	router := newAuthTestRouter(apiKeyService, nil, cfg)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.Header.Set("x-api-key", apiKey.Key)
 	router.ServeHTTP(w, req)
 

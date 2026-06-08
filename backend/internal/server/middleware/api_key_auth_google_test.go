@@ -496,7 +496,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_DisabledKey(t *testing.T) {
 	require.Equal(t, "UNAUTHENTICATED", resp.Error.Status)
 }
 
-func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
+func TestApiKeyAuthWithSubscriptionGoogle_AllowsZeroBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
@@ -510,6 +510,35 @@ func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
 					ID:      123,
 					Status:  service.StatusActive,
 					Balance: 0,
+				},
+			}, nil
+		},
+	})
+	r.Use(APIKeyAuthWithSubscriptionGoogle(apiKeyService, nil, &config.Config{}))
+	r.GET("/v1beta/test", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+
+	req := httptest.NewRequest(http.MethodGet, "/v1beta/test", nil)
+	req.Header.Set("Authorization", "Bearer ok")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestApiKeyAuthWithSubscriptionGoogle_RejectsNegativeBalance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	apiKeyService := newTestAPIKeyService(fakeAPIKeyRepo{
+		getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+			return &service.APIKey{
+				ID:     1,
+				Key:    key,
+				Status: service.StatusActive,
+				User: &service.User{
+					ID:      123,
+					Status:  service.StatusActive,
+					Balance: -0.01,
 				},
 			}, nil
 		},

@@ -14,10 +14,15 @@ import (
 type billingCacheWorkerStub struct {
 	balanceUpdates      int64
 	subscriptionUpdates int64
+	balance             float64
+	balanceErr          error
 }
 
 func (b *billingCacheWorkerStub) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
-	return 0, errors.New("not implemented")
+	if b.balanceErr != nil {
+		return 0, b.balanceErr
+	}
+	return b.balance, nil
 }
 
 func (b *billingCacheWorkerStub) SetUserBalance(ctx context.Context, userID int64, balance float64) error {
@@ -129,4 +134,24 @@ func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 		amount: 1,
 	})
 	require.False(t, enqueued)
+}
+
+func TestBillingCacheServiceCheckBillingEligibilityAllowsZeroBalance(t *testing.T) {
+	cache := &billingCacheWorkerStub{balance: 0}
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeStandard})
+	t.Cleanup(svc.Stop)
+
+	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil)
+
+	require.NoError(t, err)
+}
+
+func TestBillingCacheServiceCheckBillingEligibilityRejectsNegativeBalance(t *testing.T) {
+	cache := &billingCacheWorkerStub{balance: -0.01}
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeStandard})
+	t.Cleanup(svc.Stop)
+
+	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil)
+
+	require.ErrorIs(t, err, ErrInsufficientBalance)
 }
