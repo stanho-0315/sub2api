@@ -112,7 +112,7 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 				}
 			}
 		} else {
-			if !skipBilling && apiKey.User.Balance <= 0 {
+			if !skipBilling && apiKey.User.Balance < 0 {
 				abortWithGoogleError(c, 403, "Insufficient account balance")
 				return
 			}
