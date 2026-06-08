@@ -114,6 +114,11 @@ func RegisterGatewayRoutes(
 		})
 	}
 
+	// OpenAI-compatible clients commonly append /models to the configured base
+	// URL. Keep the root alias before the SPA fallback so clients using
+	// http://host:port as their base URL receive JSON instead of index.html.
+	r.GET("/models", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.Models)
+
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）
 	gemini := r.Group("/v1beta")
 	gemini.Use(bodyLimit)

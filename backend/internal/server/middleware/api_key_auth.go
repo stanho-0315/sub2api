@@ -133,8 +133,10 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// ── 5. 加载订阅（订阅模式时始终加载） ───────────────────────
 
-		// skipBilling: /v1/usage 只需鉴权，跳过所有计费执行
-		skipBilling := c.Request.URL.Path == "/v1/usage"
+		// skipBilling: read-only discovery endpoints only need authentication,
+		// so expired quota / subscription / balance checks should not block
+		// clients from listing models or checking their own usage.
+		skipBilling := shouldSkipBillingEnforcement(c.Request.URL.Path)
 
 		var subscription *service.UserSubscription
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -224,6 +226,15 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 
 		c.Next()
+	}
+}
+
+func shouldSkipBillingEnforcement(path string) bool {
+	switch strings.TrimSpace(path) {
+	case "/v1/usage", "/models", "/v1/models", "/antigravity/models", "/antigravity/v1/models", "/v1beta/models", "/antigravity/v1beta/models":
+		return true
+	default:
+		return false
 	}
 }
 
