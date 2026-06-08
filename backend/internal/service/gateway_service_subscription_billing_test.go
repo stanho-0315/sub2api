@@ -83,3 +83,23 @@ func TestBuildUsageBillingCommand_SubscriptionAppliesRateMultiplier(t *testing.T
 		})
 	}
 }
+
+func TestBuildUsageBillingCommand_ZeroBalanceStillSendsBalanceCost(t *testing.T) {
+	t.Parallel()
+
+	p := &postUsageBillingParams{
+		Cost:    &CostBreakdown{TotalCost: 1.0, ActualCost: 2.0},
+		User:    &User{ID: 1, Balance: 0},
+		APIKey:  &APIKey{ID: 2},
+		Account: &Account{ID: 3},
+	}
+
+	cmd := buildUsageBillingCommand("req-zero-balance", nil, p)
+
+	if cmd == nil {
+		t.Fatal("buildUsageBillingCommand returned nil")
+	}
+	if cmd.BalanceCost != 2.0 {
+		t.Errorf("BalanceCost = %v, want %v", cmd.BalanceCost, 2.0)
+	}
+}

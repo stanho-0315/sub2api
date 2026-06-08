@@ -30,7 +30,7 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 	gatewayService := service.NewGatewayService(
 		&gatewayRoutesAccountRepoStub{},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 
 	RegisterGatewayRoutes(

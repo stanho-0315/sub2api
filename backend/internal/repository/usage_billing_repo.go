@@ -113,11 +113,12 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	if cmd.BalanceCost > 0 {
-		newBalance, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost)
+		newBalance, deducted, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost)
 		if err != nil {
 			return err
 		}
 		result.NewBalance = &newBalance
+		result.BalanceDeducted = deducted
 	}
 
 	if cmd.APIKeyQuotaCost > 0 {
@@ -173,22 +174,33 @@ func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscrip
 	return service.ErrSubscriptionNotFound
 }
 
-func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, amount float64) (float64, error) {
+func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, amount float64) (float64, bool, error) {
 	var newBalance float64
+	var deducted bool
 	err := tx.QueryRowContext(ctx, `
+		WITH target AS (
+			SELECT id, balance AS old_balance
+			FROM users
+			WHERE id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		)
 		UPDATE users
-		SET balance = balance - $1,
+		SET balance = CASE
+				WHEN target.old_balance = 0 THEN 0
+				ELSE target.old_balance - $1
+			END,
 			updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
-		RETURNING balance
-	`, amount, userID).Scan(&newBalance)
+		FROM target
+		WHERE users.id = target.id
+		RETURNING users.balance, target.old_balance <> 0
+	`, amount, userID).Scan(&newBalance, &deducted)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, service.ErrUserNotFound
+		return 0, false, service.ErrUserNotFound
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return newBalance, nil
+	return newBalance, deducted, nil
 }
 
 func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID int64, amount float64) (bool, error) {

@@ -8586,7 +8586,11 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, *p.APIKey.GroupID, p.Cost.ActualCost)
 		}
 	} else if p.Cost.ActualCost > 0 && p.User != nil {
-		deps.billingCacheService.QueueDeductBalance(p.User.ID, p.Cost.ActualCost)
+		if result != nil && result.NewBalance != nil {
+			deps.billingCacheService.QueueSetBalance(p.User.ID, *result.NewBalance)
+		} else {
+			deps.billingCacheService.QueueDeductBalance(p.User.ID, p.Cost.ActualCost)
+		}
 	}
 
 	if p.Cost.ActualCost > 0 && p.APIKey != nil && p.APIKey.HasRateLimits() {
@@ -8644,12 +8648,13 @@ func notifyBalanceLow(p *postUsageBillingParams, deps *billingDeps, result *Usag
 			slog.Error("panic in notifyBalanceLow", "recover", r)
 		}
 	}()
-	if p.IsSubscriptionBill || p.Cost.ActualCost <= 0 || p.User == nil || deps.balanceNotifyService == nil {
+	if p.IsSubscriptionBill || p.Cost.ActualCost <= 0 || p.User == nil || deps.balanceNotifyService == nil || (result != nil && !result.BalanceDeducted) {
 		slog.Debug("notifyBalanceLow: skipped",
 			"is_subscription", p.IsSubscriptionBill,
 			"actual_cost", p.Cost.ActualCost,
 			"user_nil", p.User == nil,
 			"service_nil", deps.balanceNotifyService == nil,
+			"balance_deducted", result == nil || result.BalanceDeducted,
 		)
 		return
 	}

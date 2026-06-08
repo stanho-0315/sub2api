@@ -138,20 +138,20 @@ func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 
 func TestBillingCacheServiceCheckBillingEligibilityAllowsZeroBalance(t *testing.T) {
 	cache := &billingCacheWorkerStub{balance: 0}
-	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeStandard})
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeStandard}, nil)
 	t.Cleanup(svc.Stop)
 
-	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil)
+	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil, "")
 
 	require.NoError(t, err)
 }
 
 func TestBillingCacheServiceCheckBillingEligibilityRejectsNegativeBalance(t *testing.T) {
 	cache := &billingCacheWorkerStub{balance: -0.01}
-	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeStandard})
+	svc := NewBillingCacheService(cache, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeStandard}, nil)
 	t.Cleanup(svc.Stop)
 
-	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil)
+	err := svc.CheckBillingEligibility(context.Background(), &User{ID: 1}, nil, nil, nil, "")
 
 	require.ErrorIs(t, err, ErrInsufficientBalance)
 }
