@@ -373,6 +373,23 @@ func (s *BillingCacheService) QueueDeductBalance(userID int64, amount float64) {
 	}
 }
 
+// QueueSetBalance 异步写入余额缓存。
+func (s *BillingCacheService) QueueSetBalance(userID int64, balance float64) {
+	if s.cache == nil {
+		return
+	}
+	if s.enqueueCacheWrite(cacheWriteTask{
+		kind:    cacheWriteSetBalance,
+		userID:  userID,
+		balance: balance,
+	}) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
+	defer cancel()
+	s.setBalanceCache(ctx, userID, balance)
+}
+
 // InvalidateUserBalance 失效用户余额缓存
 func (s *BillingCacheService) InvalidateUserBalance(ctx context.Context, userID int64) error {
 	if s.cache == nil {
