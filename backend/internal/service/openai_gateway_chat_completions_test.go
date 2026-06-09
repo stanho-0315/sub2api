@@ -294,6 +294,83 @@ func TestForwardAsChatCompletions_InfersToolCallIDForToolResult(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestRepairResponsesInputMissingToolCallIDs(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.5-high",
+		"input":[
+			{"type":"function_call","id":"fc_android_1","call_id":"call_android_1","name":"inspect","arguments":"{}"},
+			{"type":"function_call_output","output":"done"},
+			{"type":"function_call","id":"fc_android_2","call_id":"call_android_2","name":"inspect","arguments":"{}"},
+			{"type":"function_call_output","tool_call_id":"call_android_2_alias","output":"done again"}
+		]
+	}`)
+
+	repaired, modified, err := repairResponsesInputMissingToolCallIDs(body)
+	require.NoError(t, err)
+	require.True(t, modified)
+	require.Equal(t, "call_android_1", gjson.GetBytes(repaired, `input.1.call_id`).String())
+	require.Equal(t, "call_android_2_alias", gjson.GetBytes(repaired, `input.3.call_id`).String())
+}
+
+func TestForwardAsChatCompletions_ResponsesShapeInfersMissingFunctionCallOutputCallID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{
+		"model":"gpt-5.5-high",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"run tool"}]},
+			{"type":"function_call","id":"fc_android_1","call_id":"call_android_1","name":"inspect","arguments":"{}"},
+			{"type":"function_call_output","output":"done"}
+		],
+		"stream":false
+	}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_tool_result","object":"response","model":"gpt-5.5","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_tool_result"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          2,
+		Name:        "openai-compatible",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "sk-compatible",
+			"model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.5",
+			},
+		},
+		Extra: map[string]any{
+			"openai_responses_supported": true,
+		},
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call_output").type`).String())
+	require.Equal(t, "call_android_1", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call_output").call_id`).String())
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestForwardAsChatCompletions_ClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

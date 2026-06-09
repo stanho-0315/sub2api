@@ -113,6 +113,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model in responses-shape body: %w", err)
 		}
+		if repairedBody, repaired, repairErr := repairResponsesInputMissingToolCallIDs(responsesBody); repairErr != nil {
+			return nil, fmt.Errorf("repair responses-shape tool call ids: %w", repairErr)
+		} else if repaired {
+			responsesBody = repairedBody
+		}
 		// Strip Responses API parameters that no Codex upstream accepts.
 		// Because this branch forwards the raw body (the normal path rebuilds
 		// it from ChatCompletionsRequest and drops unknown fields naturally),
@@ -340,6 +345,65 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	return result, handleErr
+}
+
+func repairResponsesInputMissingToolCallIDs(body []byte) ([]byte, bool, error) {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(input.Raw), &items); err != nil {
+		return body, false, err
+	}
+
+	pendingCallIDs := make([]string, 0)
+	modified := false
+	for _, item := range items {
+		itemType := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		if isCodexToolCallContextItemType(itemType) {
+			callID := firstNonEmptyString(item["call_id"], item["id"])
+			if callID != "" {
+				pendingCallIDs = append(pendingCallIDs, callID)
+			}
+			continue
+		}
+
+		if !isCodexToolCallOutputItemType(itemType) {
+			continue
+		}
+		if firstNonEmptyString(item["call_id"]) != "" {
+			if len(pendingCallIDs) > 0 && firstNonEmptyString(item["call_id"]) == pendingCallIDs[0] {
+				pendingCallIDs = pendingCallIDs[1:]
+			}
+			continue
+		}
+		if callID := firstNonEmptyString(item["tool_call_id"], item["id"]); callID != "" {
+			item["call_id"] = callID
+			modified = true
+			continue
+		}
+		if len(pendingCallIDs) == 0 {
+			continue
+		}
+		item["call_id"] = pendingCallIDs[0]
+		pendingCallIDs = pendingCallIDs[1:]
+		modified = true
+	}
+	if !modified {
+		return body, false, nil
+	}
+
+	inputRaw, err := json.Marshal(items)
+	if err != nil {
+		return body, false, err
+	}
+	repaired, err := sjson.SetRawBytes(body, "input", inputRaw)
+	if err != nil {
+		return body, false, err
+	}
+	return repaired, true, nil
 }
 
 func normalizeResponsesRequestServiceTier(req *apicompat.ResponsesRequest) {
