@@ -297,9 +297,16 @@ func chatToolToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if output == "" {
 		output = "(empty)"
 	}
+	callID := strings.TrimSpace(m.ToolCallID)
+	if callID == "" {
+		callID = strings.TrimSpace(m.CallID)
+	}
+	if callID == "" {
+		callID = strings.TrimSpace(m.ID)
+	}
 	return []ResponsesInputItem{{
 		Type:   "function_call_output",
-		CallID: m.ToolCallID,
+		CallID: callID,
 		Output: output,
 	}}, nil
 }

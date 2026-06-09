@@ -149,6 +149,29 @@ func TestChatCompletionsToResponses_ToolCallOutputInfersMissingToolCallID(t *tes
 	assert.Equal(t, "pong", items[2].Output)
 }
 
+func TestChatCompletionsToResponses_ToolCallOutputUsesCompatCallIDField(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-4o",
+		"messages":[
+			{"role":"user","content":"Call the function"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"ping","arguments":"{}"}}]},
+			{"role":"tool","call_id":"call_1","content":"pong"}
+		]
+	}`)
+
+	var req ChatCompletionsRequest
+	require.NoError(t, json.Unmarshal(raw, &req))
+	resp, err := ChatCompletionsToResponses(&req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 3)
+	assert.Equal(t, "function_call_output", items[2].Type)
+	assert.Equal(t, "call_1", items[2].CallID)
+	assert.Equal(t, "pong", items[2].Output)
+}
+
 func TestChatCompletionsToResponses_ToolCallOutputInfersSequentialMissingToolCallIDs(t *testing.T) {
 	req := &ChatCompletionsRequest{
 		Model: "gpt-4o",

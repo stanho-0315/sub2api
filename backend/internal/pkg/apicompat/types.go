@@ -457,6 +457,8 @@ type ChatMessage struct {
 	Name             string          `json:"name,omitempty"`
 	ToolCalls        []ChatToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	ID               string          `json:"id,omitempty"`
 
 	// Legacy function calling
 	FunctionCall *ChatFunctionCall `json:"function_call,omitempty"`
