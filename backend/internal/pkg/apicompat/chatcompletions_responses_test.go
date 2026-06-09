@@ -784,6 +784,27 @@ func TestChatCompletionsToResponses_ToolArrayContent(t *testing.T) {
 	assert.Equal(t, "image width: 100; image height: 200", items[2].Output)
 }
 
+func TestChatCompletionsToResponses_OrphanToolResultDowngradesToUserMessage(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model: "gpt-5",
+		Messages: []ChatMessage{
+			{Role: "user", Content: json.RawMessage(`"run tool"`)},
+			{Role: "tool", Content: json.RawMessage(`"done"`)},
+		},
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 2)
+	assert.Empty(t, items[1].Type)
+	assert.Equal(t, "user", items[1].Role)
+	assert.NotContains(t, string(resp.Input), `"function_call_output"`)
+	assert.Contains(t, string(items[1].Content), `"done"`)
+}
+
 func TestResponsesToChatCompletions_Incomplete(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:                "resp_inc",

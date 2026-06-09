@@ -369,6 +369,24 @@ func TestRepairResponsesInputMissingToolCallIDs(t *testing.T) {
 	require.Equal(t, "call_android_2_alias", gjson.GetBytes(repaired, `input.3.call_id`).String())
 }
 
+func TestRepairResponsesInputMissingToolCallIDs_DowngradesOrphanOutput(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.5-high",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"run tool"}]},
+			{"type":"function_call_output","output":"done"}
+		]
+	}`)
+
+	repaired, modified, err := repairResponsesInputMissingToolCallIDs(body)
+	require.NoError(t, err)
+	require.True(t, modified)
+	require.Equal(t, "message", gjson.GetBytes(repaired, `input.1.type`).String())
+	require.Equal(t, "user", gjson.GetBytes(repaired, `input.1.role`).String())
+	require.Equal(t, "done", gjson.GetBytes(repaired, `input.1.content.0.text`).String())
+	require.False(t, gjson.GetBytes(repaired, `input.#(type=="function_call_output")`).Exists())
+}
+
 func TestForwardAsChatCompletions_ResponsesShapeInfersMissingFunctionCallOutputCallID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

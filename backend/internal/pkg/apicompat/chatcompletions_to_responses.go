@@ -304,6 +304,9 @@ func chatToolToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if callID == "" {
 		callID = strings.TrimSpace(m.ID)
 	}
+	if callID == "" {
+		return orphanToolOutputToUserMessage(output)
+	}
 	return []ResponsesInputItem{{
 		Type:   "function_call_output",
 		CallID: callID,
@@ -327,6 +330,14 @@ func chatFunctionToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		CallID: m.Name,
 		Output: output,
 	}}, nil
+}
+
+func orphanToolOutputToUserMessage(output string) ([]ResponsesInputItem, error) {
+	partsJSON, err := json.Marshal([]ResponsesContentPart{{Type: "input_text", Text: output}})
+	if err != nil {
+		return nil, err
+	}
+	return []ResponsesInputItem{{Role: "user", Content: partsJSON}}, nil
 }
 
 // parseChatContent returns the string value of a ChatMessage Content field.

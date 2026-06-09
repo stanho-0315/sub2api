@@ -200,6 +200,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 	}
 
+	if repairedBody, repaired, repairErr := repairResponsesInputMissingToolCallIDs(responsesBody); repairErr != nil {
+		return nil, fmt.Errorf("repair final tool call ids: %w", repairErr)
+	} else if repaired {
+		responsesBody = repairedBody
+	}
+
 	if account.Type == AccountTypeAPIKey {
 		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
 			var reqBody map[string]any
@@ -385,6 +391,8 @@ func repairResponsesInputMissingToolCallIDs(body []byte) ([]byte, bool, error) {
 			continue
 		}
 		if len(pendingCallIDs) == 0 {
+			downgradeOrphanFunctionCallOutput(item)
+			modified = true
 			continue
 		}
 		item["call_id"] = pendingCallIDs[0]
@@ -404,6 +412,33 @@ func repairResponsesInputMissingToolCallIDs(body []byte) ([]byte, bool, error) {
 		return body, false, err
 	}
 	return repaired, true, nil
+}
+
+func downgradeOrphanFunctionCallOutput(item map[string]any) {
+	output := strings.TrimSpace(firstNonEmptyString(item["output"]))
+	if output == "" {
+		output = strings.TrimSpace(extractTextFromContent(item["content"]))
+	}
+	if output == "" && item["content"] != nil {
+		if b, err := json.Marshal(item["content"]); err == nil {
+			output = string(b)
+		}
+	}
+	if output == "" {
+		output = "(empty)"
+	}
+
+	for key := range item {
+		delete(item, key)
+	}
+	item["type"] = "message"
+	item["role"] = "user"
+	item["content"] = []any{
+		map[string]any{
+			"type": "input_text",
+			"text": output,
+		},
+	}
 }
 
 func normalizeResponsesRequestServiceTier(req *apicompat.ResponsesRequest) {
