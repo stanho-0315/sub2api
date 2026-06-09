@@ -208,8 +208,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		responsesBody = repairedBody
 	}
 	if account.Type == AccountTypeOAuth {
-		if repairedBody, repaired, repairErr := downgradeUnlinkedResponsesToolOutputs(responsesBody); repairErr != nil {
-			return nil, fmt.Errorf("repair unlinked tool outputs: %w", repairErr)
+		if repairedBody, repaired, repairErr := downgradeOAuthHTTPToolContinuation(responsesBody); repairErr != nil {
+			return nil, fmt.Errorf("repair oauth http tool continuation: %w", repairErr)
 		} else if repaired {
 			responsesBody = repairedBody
 		}
@@ -537,6 +537,60 @@ func repairResponsesInputMissingToolCallIDs(body []byte) ([]byte, bool, error) {
 	}
 
 	inputRaw, err := json.Marshal(items)
+	if err != nil {
+		return body, false, err
+	}
+	repaired, err := sjson.SetRawBytes(body, "input", inputRaw)
+	if err != nil {
+		return body, false, err
+	}
+	return repaired, true, nil
+}
+
+func downgradeOAuthHTTPToolContinuation(body []byte) ([]byte, bool, error) {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(input.Raw), &items); err != nil {
+		return body, false, err
+	}
+
+	hasToolOutput := false
+	for _, item := range items {
+		itemType := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		if isCodexToolCallOutputItemType(itemType) {
+			hasToolOutput = true
+			break
+		}
+	}
+	if !hasToolOutput {
+		return body, false, nil
+	}
+
+	normalized := make([]map[string]any, 0, len(items))
+	modified := false
+	for _, item := range items {
+		itemType := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		switch {
+		case isCodexToolCallOutputItemType(itemType):
+			downgradeOrphanFunctionCallOutput(item)
+			normalized = append(normalized, item)
+			modified = true
+		case isCodexToolCallContextItemType(itemType), itemType == "item_reference":
+			modified = true
+			continue
+		default:
+			normalized = append(normalized, item)
+		}
+	}
+	if !modified {
+		return body, false, nil
+	}
+
+	inputRaw, err := json.Marshal(normalized)
 	if err != nil {
 		return body, false, err
 	}
