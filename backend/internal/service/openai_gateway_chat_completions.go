@@ -39,6 +39,8 @@ var cursorResponsesUnsupportedFields = []string{
 	"stream_options",
 }
 
+const openAIChatCompletionsTransientRetryAttempts = 3
+
 // ForwardAsChatCompletions accepts a Chat Completions request body, converts it
 // to OpenAI Responses API format, forwards to the OpenAI upstream, and converts
 // the response back to Chat Completions format.
@@ -258,7 +260,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.doChatCompletionsUpstreamWithTransientRetry(ctx, c, upstreamReq, proxyURL, account, upstreamModel)
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
@@ -351,6 +353,130 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	return result, handleErr
+}
+
+func (s *OpenAIGatewayService) doChatCompletionsUpstreamWithTransientRetry(
+	ctx context.Context,
+	c *gin.Context,
+	upstreamReq *http.Request,
+	proxyURL string,
+	account *Account,
+	upstreamModel string,
+) (*http.Response, error) {
+	if s == nil || s.httpUpstream == nil {
+		return nil, errors.New("openai upstream is not configured")
+	}
+
+	var lastResp *http.Response
+	var lastErr error
+	for attempt := 1; attempt <= openAIChatCompletionsTransientRetryAttempts; attempt++ {
+		req, err := cloneHTTPJSONRequest(upstreamReq)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+		if err != nil {
+			lastErr = err
+			return nil, err
+		}
+		if resp == nil || resp.StatusCode < 400 {
+			return resp, nil
+		}
+
+		respBody := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+		if !s.shouldRetryOpenAIChatCompletionsSameAccount(resp.StatusCode, upstreamMsg, respBody, attempt) {
+			return resp, nil
+		}
+
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               "retry",
+			Message:            upstreamMsg,
+		})
+		logger.L().Warn("openai chat_completions: transient upstream error, retrying same account",
+			zap.Int64("account_id", account.ID),
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", openAIChatCompletionsTransientRetryAttempts),
+			zap.Int("upstream_status", resp.StatusCode),
+			zap.String("upstream_model", upstreamModel),
+			zap.String("upstream_message", upstreamMsg),
+		)
+
+		lastResp = resp
+		delay := s.openAIWSRetryBackoff(attempt)
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return lastResp, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	if lastResp != nil {
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
+func (s *OpenAIGatewayService) shouldRetryOpenAIChatCompletionsSameAccount(statusCode int, upstreamMsg string, respBody []byte, attempt int) bool {
+	if attempt >= openAIChatCompletionsTransientRetryAttempts {
+		return false
+	}
+	if !s.shouldFailoverOpenAIUpstreamResponse(statusCode, upstreamMsg, respBody) {
+		return false
+	}
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+		return false
+	default:
+		return statusCode >= 500 || isOpenAITransientProcessingError(statusCode, upstreamMsg, respBody)
+	}
+}
+
+func cloneHTTPJSONRequest(req *http.Request) (*http.Request, error) {
+	if req == nil {
+		return nil, errors.New("nil upstream request")
+	}
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		cloned := req.Clone(req.Context())
+		cloned.Body = body
+		cloned.GetBody = req.GetBody
+		return cloned, nil
+	}
+	if req.Body == nil {
+		return req.Clone(req.Context()), nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	cloned := req.Clone(req.Context())
+	cloned.Body = io.NopCloser(bytes.NewReader(body))
+	cloned.GetBody = req.GetBody
+	return cloned, nil
 }
 
 func repairResponsesInputMissingToolCallIDs(body []byte) ([]byte, bool, error) {

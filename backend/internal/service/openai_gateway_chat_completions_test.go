@@ -536,6 +536,62 @@ func TestForwardAsChatCompletions_BufferedResponseFailedTriggersFailover(t *test
 	require.False(t, c.Writer.Written())
 }
 
+func TestForwardAsChatCompletions_RetriesTransientHTTP502SameAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	failedBody := strings.Join([]string{
+		`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`,
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_failed","object":"response","model":"gpt-5.5","status":"failed","output":[],"error":{"code":"upstream_error","message":"Upstream request failed"}}}`,
+		"",
+	}, "\n")
+	okBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_retry_ok","object":"response","model":"gpt-5.5","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusBadGateway,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_retry_502"}},
+			Body:       io.NopCloser(strings.NewReader(failedBody)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_retry_ok"}},
+			Body:       io.NopCloser(strings.NewReader(okBody)),
+		},
+	}}
+
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          1,
+		Name:        "openai-oauth",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "gpt-5.5")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, upstream.requests, 2)
+	require.Len(t, upstream.bodies, 2)
+	require.Equal(t, upstream.bodies[0], upstream.bodies[1])
+}
+
 func TestForwardAsChatCompletions_StreamResponseFailedTriggersFailoverBeforeFlush(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
