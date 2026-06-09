@@ -113,6 +113,91 @@ func TestChatCompletionsToResponses_ToolCalls(t *testing.T) {
 	assert.Equal(t, "ping", resp.Tools[0].Name)
 }
 
+func TestChatCompletionsToResponses_ToolCallOutputInfersMissingToolCallID(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: json.RawMessage(`"Call the function"`)},
+			{
+				Role: "assistant",
+				ToolCalls: []ChatToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: ChatFunctionCall{
+							Name:      "ping",
+							Arguments: `{"host":"example.com"}`,
+						},
+					},
+				},
+			},
+			{
+				Role:    "tool",
+				Content: json.RawMessage(`"pong"`),
+			},
+		},
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 3)
+	assert.Equal(t, "function_call_output", items[2].Type)
+	assert.Equal(t, "call_1", items[2].CallID)
+	assert.Equal(t, "pong", items[2].Output)
+}
+
+func TestChatCompletionsToResponses_ToolCallOutputInfersSequentialMissingToolCallIDs(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: json.RawMessage(`"Call functions"`)},
+			{
+				Role: "assistant",
+				ToolCalls: []ChatToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: ChatFunctionCall{
+							Name:      "ping",
+							Arguments: `{}`,
+						},
+					},
+					{
+						ID:   "call_2",
+						Type: "function",
+						Function: ChatFunctionCall{
+							Name:      "trace",
+							Arguments: `{}`,
+						},
+					},
+				},
+			},
+			{
+				Role:    "tool",
+				Content: json.RawMessage(`"pong"`),
+			},
+			{
+				Role:    "tool",
+				Content: json.RawMessage(`"trace"`),
+			},
+		},
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 5)
+	assert.Equal(t, "function_call_output", items[3].Type)
+	assert.Equal(t, "call_1", items[3].CallID)
+	assert.Equal(t, "function_call_output", items[4].Type)
+	assert.Equal(t, "call_2", items[4].CallID)
+}
+
 func TestChatCompletionsToResponses_MaxTokens(t *testing.T) {
 	t.Run("max_tokens", func(t *testing.T) {
 		maxTokens := 100

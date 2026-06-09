@@ -93,12 +93,28 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 // array into a Responses API input items array.
 func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputItem, error) {
 	var out []ResponsesInputItem
+	pendingToolCallIDs := make([]string, 0)
 	for _, m := range msgs {
+		if m.Role == "assistant" {
+			pendingToolCallIDs = pendingToolCallIDs[:0]
+			for _, tc := range m.ToolCalls {
+				callID := strings.TrimSpace(tc.ID)
+				if callID != "" {
+					pendingToolCallIDs = append(pendingToolCallIDs, callID)
+				}
+			}
+		}
+		if m.Role == "tool" && strings.TrimSpace(m.ToolCallID) == "" && len(pendingToolCallIDs) > 0 {
+			m.ToolCallID = pendingToolCallIDs[0]
+		}
 		items, err := chatMessageToResponsesItems(m)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, items...)
+		if m.Role == "tool" && len(pendingToolCallIDs) > 0 && strings.TrimSpace(m.ToolCallID) == pendingToolCallIDs[0] {
+			pendingToolCallIDs = pendingToolCallIDs[1:]
+		}
 	}
 	return out, nil
 }
