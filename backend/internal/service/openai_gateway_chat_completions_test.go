@@ -387,6 +387,40 @@ func TestRepairResponsesInputMissingToolCallIDs_DowngradesOrphanOutput(t *testin
 	require.False(t, gjson.GetBytes(repaired, `input.#(type=="function_call_output")`).Exists())
 }
 
+func TestDowngradeUnlinkedResponsesToolOutputs(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.5-high",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"run tool"}]},
+			{"type":"item_reference","id":"call_android_1"},
+			{"type":"function_call_output","call_id":"call_android_1","output":"done"}
+		]
+	}`)
+
+	repaired, modified, err := downgradeUnlinkedResponsesToolOutputs(body)
+	require.NoError(t, err)
+	require.True(t, modified)
+	require.Equal(t, "message", gjson.GetBytes(repaired, `input.2.type`).String())
+	require.Equal(t, "user", gjson.GetBytes(repaired, `input.2.role`).String())
+	require.Equal(t, "done", gjson.GetBytes(repaired, `input.2.content.0.text`).String())
+	require.False(t, gjson.GetBytes(repaired, `input.#(type=="function_call_output")`).Exists())
+}
+
+func TestDowngradeUnlinkedResponsesToolOutputs_KeepsLinkedOutput(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.5-high",
+		"input":[
+			{"type":"function_call","id":"fc_android_1","call_id":"call_android_1","name":"inspect","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_android_1","output":"done"}
+		]
+	}`)
+
+	repaired, modified, err := downgradeUnlinkedResponsesToolOutputs(body)
+	require.NoError(t, err)
+	require.False(t, modified)
+	require.Equal(t, body, repaired)
+}
+
 func TestForwardAsChatCompletions_ResponsesShapeInfersMissingFunctionCallOutputCallID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

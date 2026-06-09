@@ -207,6 +207,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	} else if repaired {
 		responsesBody = repairedBody
 	}
+	if account.Type == AccountTypeOAuth {
+		if repairedBody, repaired, repairErr := downgradeUnlinkedResponsesToolOutputs(responsesBody); repairErr != nil {
+			return nil, fmt.Errorf("repair unlinked tool outputs: %w", repairErr)
+		} else if repaired {
+			responsesBody = repairedBody
+		}
+	}
 
 	if account.Type == AccountTypeAPIKey {
 		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
@@ -523,6 +530,60 @@ func repairResponsesInputMissingToolCallIDs(body []byte) ([]byte, bool, error) {
 		}
 		item["call_id"] = pendingCallIDs[0]
 		pendingCallIDs = pendingCallIDs[1:]
+		modified = true
+	}
+	if !modified {
+		return body, false, nil
+	}
+
+	inputRaw, err := json.Marshal(items)
+	if err != nil {
+		return body, false, err
+	}
+	repaired, err := sjson.SetRawBytes(body, "input", inputRaw)
+	if err != nil {
+		return body, false, err
+	}
+	return repaired, true, nil
+}
+
+func downgradeUnlinkedResponsesToolOutputs(body []byte) ([]byte, bool, error) {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(input.Raw), &items); err != nil {
+		return body, false, err
+	}
+
+	contextCallIDs := make(map[string]struct{})
+	for _, item := range items {
+		itemType := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		if !isCodexToolCallContextItemType(itemType) {
+			continue
+		}
+		callID := firstNonEmptyString(item["call_id"], item["id"])
+		if callID != "" {
+			contextCallIDs[callID] = struct{}{}
+		}
+	}
+
+	modified := false
+	for _, item := range items {
+		itemType := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		if !isCodexToolCallOutputItemType(itemType) {
+			continue
+		}
+		callID := firstNonEmptyString(item["call_id"])
+		if callID == "" {
+			continue
+		}
+		if _, ok := contextCallIDs[callID]; ok {
+			continue
+		}
+		downgradeOrphanFunctionCallOutput(item)
 		modified = true
 	}
 	if !modified {
