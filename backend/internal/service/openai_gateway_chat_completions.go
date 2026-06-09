@@ -267,7 +267,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.doChatCompletionsUpstreamWithTransientRetry(ctx, c, upstreamReq, proxyURL, account, upstreamModel)
+	requestShapeFields := openAIResponsesRequestShapeLogFields(responsesBody)
+	resp, err := s.doChatCompletionsUpstreamWithTransientRetry(ctx, c, upstreamReq, proxyURL, account, upstreamModel, requestShapeFields)
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
@@ -303,6 +304,15 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			logFields := []zap.Field{
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+				zap.String("upstream_model", upstreamModel),
+				zap.String("upstream_message", upstreamMsg),
+			}
+			logFields = append(logFields, requestShapeFields...)
+			logger.L().Warn("openai chat_completions: upstream error request shape", logFields...)
+
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -369,6 +379,7 @@ func (s *OpenAIGatewayService) doChatCompletionsUpstreamWithTransientRetry(
 	proxyURL string,
 	account *Account,
 	upstreamModel string,
+	requestShapeFields []zap.Field,
 ) (*http.Response, error) {
 	if s == nil || s.httpUpstream == nil {
 		return nil, errors.New("openai upstream is not configured")
@@ -408,12 +419,14 @@ func (s *OpenAIGatewayService) doChatCompletionsUpstreamWithTransientRetry(
 			Message:            upstreamMsg,
 		})
 		logger.L().Warn("openai chat_completions: transient upstream error, retrying same account",
-			zap.Int64("account_id", account.ID),
-			zap.Int("attempt", attempt),
-			zap.Int("max_attempts", openAIChatCompletionsTransientRetryAttempts),
-			zap.Int("upstream_status", resp.StatusCode),
-			zap.String("upstream_model", upstreamModel),
-			zap.String("upstream_message", upstreamMsg),
+			append([]zap.Field{
+				zap.Int64("account_id", account.ID),
+				zap.Int("attempt", attempt),
+				zap.Int("max_attempts", openAIChatCompletionsTransientRetryAttempts),
+				zap.Int("upstream_status", resp.StatusCode),
+				zap.String("upstream_model", upstreamModel),
+				zap.String("upstream_message", upstreamMsg),
+			}, requestShapeFields...)...,
 		)
 
 		lastResp = resp
@@ -452,6 +465,206 @@ func (s *OpenAIGatewayService) shouldRetryOpenAIChatCompletionsSameAccount(statu
 	default:
 		return statusCode >= 500 || isOpenAITransientProcessingError(statusCode, upstreamMsg, respBody)
 	}
+}
+
+func openAIResponsesRequestShapeLogFields(body []byte) []zap.Field {
+	fields := []zap.Field{
+		zap.Int("request_body_bytes", len(body)),
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return append(fields, zap.Bool("request_json_valid", false))
+	}
+
+	fields = append(fields,
+		zap.Bool("request_json_valid", true),
+		zap.Bool("request_has_messages", gjson.GetBytes(body, "messages").Exists()),
+		zap.Bool("request_has_input", gjson.GetBytes(body, "input").Exists()),
+		zap.Bool("request_has_previous_response_id", strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != ""),
+		zap.Bool("request_has_tools", gjson.GetBytes(body, "tools").Exists()),
+		zap.Int("request_tools_count", arrayLenGJSON(gjson.GetBytes(body, "tools"))),
+		zap.Bool("request_has_reasoning", gjson.GetBytes(body, "reasoning").Exists()),
+		zap.Bool("request_has_include", gjson.GetBytes(body, "include").Exists()),
+		zap.Bool("request_has_store", gjson.GetBytes(body, "store").Exists()),
+		zap.Bool("request_store", gjson.GetBytes(body, "store").Bool()),
+		zap.Bool("request_has_parallel_tool_calls", gjson.GetBytes(body, "parallel_tool_calls").Exists()),
+		zap.Bool("request_parallel_tool_calls", gjson.GetBytes(body, "parallel_tool_calls").Bool()),
+		zap.Bool("request_has_tool_choice", gjson.GetBytes(body, "tool_choice").Exists()),
+		zap.Bool("request_has_prompt_cache_key", strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()) != ""),
+		zap.String("request_reasoning_effort", strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())),
+	)
+
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return fields
+	}
+
+	shape := newOpenAIResponsesInputShape()
+	input.ForEach(func(_, item gjson.Result) bool {
+		shape.observeItem(item)
+		return true
+	})
+
+	fields = append(fields,
+		zap.Int("request_input_count", shape.inputCount),
+		zap.Any("request_input_type_counts", shape.inputTypeCounts),
+		zap.Any("request_role_counts", shape.roleCounts),
+		zap.Int("request_function_call_count", shape.functionCallCount),
+		zap.Int("request_function_call_output_count", shape.functionCallOutputCount),
+		zap.Int("request_item_reference_count", shape.itemReferenceCount),
+		zap.Int("request_message_count", shape.messageCount),
+		zap.Int("request_reasoning_item_count", shape.reasoningItemCount),
+		zap.Int("request_tool_output_with_call_id", shape.toolOutputWithCallID),
+		zap.Int("request_tool_output_without_call_id", shape.toolOutputWithoutCallID),
+		zap.Int("request_function_call_with_call_id", shape.functionCallWithCallID),
+		zap.Int("request_function_call_without_call_id", shape.functionCallWithoutCallID),
+		zap.Int("request_content_part_count", shape.contentPartCount),
+		zap.Any("request_content_part_type_counts", shape.contentPartTypeCounts),
+	)
+	if len(shape.sampleItemIDHashes) > 0 {
+		fields = append(fields, zap.Strings("request_sample_item_id_hashes", shape.sampleItemIDHashes))
+	}
+	if len(shape.sampleCallIDHashes) > 0 {
+		fields = append(fields, zap.Strings("request_sample_call_id_hashes", shape.sampleCallIDHashes))
+	}
+	return fields
+}
+
+type openAIResponsesInputShape struct {
+	inputCount                int
+	inputTypeCounts           map[string]int
+	roleCounts                map[string]int
+	contentPartTypeCounts     map[string]int
+	functionCallCount         int
+	functionCallOutputCount   int
+	itemReferenceCount        int
+	messageCount              int
+	reasoningItemCount        int
+	toolOutputWithCallID      int
+	toolOutputWithoutCallID   int
+	functionCallWithCallID    int
+	functionCallWithoutCallID int
+	contentPartCount          int
+	sampleItemIDHashes        []string
+	sampleCallIDHashes        []string
+	seenSampleItemIDHash      map[string]struct{}
+	seenSampleCallIDHash      map[string]struct{}
+}
+
+func newOpenAIResponsesInputShape() *openAIResponsesInputShape {
+	return &openAIResponsesInputShape{
+		inputTypeCounts:       make(map[string]int),
+		roleCounts:            make(map[string]int),
+		contentPartTypeCounts: make(map[string]int),
+		seenSampleItemIDHash:  make(map[string]struct{}),
+		seenSampleCallIDHash:  make(map[string]struct{}),
+	}
+}
+
+func (s *openAIResponsesInputShape) observeItem(item gjson.Result) {
+	s.inputCount++
+	itemType := strings.TrimSpace(item.Get("type").String())
+	if itemType == "" {
+		itemType = "(missing)"
+	}
+	s.inputTypeCounts[itemType]++
+
+	role := strings.TrimSpace(item.Get("role").String())
+	if role != "" {
+		s.roleCounts[role]++
+	}
+
+	switch {
+	case isCodexToolCallContextItemType(itemType):
+		s.functionCallCount++
+		if strings.TrimSpace(firstNonEmptyGJSON(item.Get("call_id"), item.Get("id"))) == "" {
+			s.functionCallWithoutCallID++
+		} else {
+			s.functionCallWithCallID++
+		}
+	case isCodexToolCallOutputItemType(itemType):
+		s.functionCallOutputCount++
+		if strings.TrimSpace(item.Get("call_id").String()) == "" {
+			s.toolOutputWithoutCallID++
+		} else {
+			s.toolOutputWithCallID++
+		}
+	case itemType == "item_reference":
+		s.itemReferenceCount++
+	case itemType == "message":
+		s.messageCount++
+	case itemType == "reasoning":
+		s.reasoningItemCount++
+	}
+
+	s.addSampleItemIDHash(item.Get("id").String())
+	s.addSampleCallIDHash(firstNonEmptyGJSON(item.Get("call_id"), item.Get("tool_call_id")))
+	s.observeContent(item.Get("content"))
+}
+
+func (s *openAIResponsesInputShape) observeContent(content gjson.Result) {
+	switch {
+	case content.IsArray():
+		content.ForEach(func(_, part gjson.Result) bool {
+			s.observeContentPart(part)
+			return true
+		})
+	case content.Exists():
+		s.contentPartCount++
+		s.contentPartTypeCounts[content.Type.String()]++
+	}
+}
+
+func (s *openAIResponsesInputShape) observeContentPart(part gjson.Result) {
+	s.contentPartCount++
+	partType := strings.TrimSpace(part.Get("type").String())
+	if partType == "" {
+		partType = part.Type.String()
+	}
+	s.contentPartTypeCounts[partType]++
+}
+
+func (s *openAIResponsesInputShape) addSampleItemIDHash(raw string) {
+	addSampleHash(raw, &s.sampleItemIDHashes, s.seenSampleItemIDHash)
+}
+
+func (s *openAIResponsesInputShape) addSampleCallIDHash(raw string) {
+	addSampleHash(raw, &s.sampleCallIDHashes, s.seenSampleCallIDHash)
+}
+
+func addSampleHash(raw string, values *[]string, seen map[string]struct{}) {
+	if len(*values) >= 3 {
+		return
+	}
+	hash := hashSensitiveValueForLog(raw)
+	if hash == "" {
+		return
+	}
+	if _, ok := seen[hash]; ok {
+		return
+	}
+	seen[hash] = struct{}{}
+	*values = append(*values, hash)
+}
+
+func firstNonEmptyGJSON(values ...gjson.Result) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(value.String()); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func arrayLenGJSON(value gjson.Result) int {
+	if !value.IsArray() {
+		return 0
+	}
+	count := 0
+	value.ForEach(func(_, _ gjson.Result) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 func cloneHTTPJSONRequest(req *http.Request) (*http.Request, error) {
